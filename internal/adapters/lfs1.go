@@ -59,7 +59,7 @@ func ParsePytestReportFromBytes(data []byte) (*PytestReport, error) {
 func CalculateScore(report *PytestReport) *LFS1Result {
 	summary := report.Summary
 	total := summary.Total
-	passed := total - summary.Failed - summary.Skipped
+	passed := summary.Passed
 
 	// 计算分数
 	var score float64

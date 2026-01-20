@@ -4,6 +4,7 @@ set -e
 echo "=== LFS Auto Grader ==="
 echo "Solution ID: $SOLUTION_ID"
 echo "Task ID: $TASK_ID"
+echo "Output Directory: $OUTPUT_DIR"
 
 # 下载用户提交
 echo "Downloading solution..."
@@ -47,5 +48,11 @@ uv run pytest --json-report --json-report-file=report.json || true
 # 输出报告内容 (用于调试)
 echo "=== Test Report ==="
 cat report.json 2>/dev/null || echo "No report.json found"
+
+# 将报告复制到输出目录（供外部 adapter 解析）
+if [ -n "$OUTPUT_DIR" ] && [ -d "$OUTPUT_DIR" ]; then
+    echo "Copying report to output directory: $OUTPUT_DIR"
+    cp report.json "$OUTPUT_DIR/" 2>/dev/null || echo "Failed to copy report.json"
+fi
 
 echo "=== Evaluation Complete ==="

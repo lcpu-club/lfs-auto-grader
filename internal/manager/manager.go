@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/lcpu-club/lfs-auto-grader/internal/adapters"
 	"github.com/lcpu-club/lfs-auto-grader/internal/config"
 	"github.com/lcpu-club/lfs-auto-grader/internal/executor"
 	"github.com/lcpu-club/lfs-auto-grader/pkg/aoiclient"
@@ -131,7 +134,16 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 		log.Printf("Failed to patch running status: %v", err)
 	}
 
-	execConfig, err := m.buildExecuteConfig(soln, rc)
+	// 创建临时目录用于存放评测报告
+	outputDir, err := os.MkdirTemp("", fmt.Sprintf("judge-output-%s-", soln.SolutionId))
+	if err != nil {
+		return fmt.Errorf("failed to create temp output dir: %w", err)
+	}
+	defer os.RemoveAll(outputDir) // 评测完成后清理临时目录
+
+	log.Printf("Created temp output directory: %s", outputDir)
+
+	execConfig, err := m.buildExecuteConfig(soln, rc, outputDir)
 	if err != nil {
 		return fmt.Errorf("failed to build execute config: %w", err)
 	}
@@ -162,6 +174,8 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 		aoi.SaveDetails(context.TODO(), &aoiclient.SolutionDetails{
 			Summary: fmt.Sprintf("评测超时，时间限制 %d 秒", execConfig.Timeout),
 		})
+		aoi.Complete(context.TODO())
+		return nil
 	}
 
 	if result.OOM {
@@ -174,15 +188,73 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 		aoi.SaveDetails(context.TODO(), &aoiclient.SolutionDetails{
 			Summary: fmt.Sprintf("内存超限，内存限制 %d MB", execConfig.MemoryLimit),
 		})
-	}
-
-	// 如果容器异常退出且没有超时或 OOM
-	if result.ExitCode != 0 && !result.TimedOut && !result.OOM {
-		log.Printf("Solution %s finished with non-zero exit code %d", soln.SolutionId, result.ExitCode)
-		// 不覆盖容器内部可能已经上报的状态，只记录日志
+		aoi.Complete(context.TODO())
+		return nil
 	}
 
 	log.Printf("Solution %s finished with exit code %d", soln.SolutionId, result.ExitCode)
+
+	// 从外部读取并解析评测报告
+	reportProcessed := false
+	adapter := soln.ProblemConfig.Judge.Adapter
+	
+	if adapter == "lfs1" {
+		// 获取报告文件名（默认为 report.json）
+		reportFileName := "report.json"
+		if rc.Variables != nil {
+			if reportName, ok := rc.Variables["report_name"].(string); ok && reportName != "" {
+				reportFileName = reportName
+			}
+		}
+		
+		reportPath := filepath.Join(outputDir, reportFileName)
+		log.Printf("Looking for report at: %s", reportPath)
+		
+		if _, err := os.Stat(reportPath); err == nil {
+			// 报告文件存在，解析并上报
+			log.Printf("Found report file, parsing with adapter: %s", adapter)
+			
+			report, err := adapters.ParsePytestReport(reportPath)
+			if err != nil {
+				log.Printf("Failed to parse report: %v", err)
+				aoi.Patch(context.TODO(), &aoiclient.SolutionInfo{
+					Score:   0,
+					Status:  aoiclient.StatusInternalError,
+					Message: fmt.Sprintf("解析评测报告失败: %v", err),
+				})
+			} else {
+				// 使用 adapter 计算分数
+				lfsResult := adapters.CalculateScore(report)
+				
+				// 上报结果给 AOI
+				log.Printf("Reporting result: score=%.2f, status=%s", lfsResult.Score, lfsResult.Status)
+				
+				aoi.Patch(context.TODO(), &aoiclient.SolutionInfo{
+					Score:   lfsResult.Score,
+					Status:  lfsResult.Status,
+					Message: lfsResult.Message,
+				})
+				
+				if lfsResult.Details != nil {
+					aoi.SaveDetails(context.TODO(), lfsResult.Details)
+				}
+				
+				reportProcessed = true
+			}
+		} else {
+			log.Printf("Report file not found at %s: %v", reportPath, err)
+		}
+	}
+
+	// 如果没有处理报告且容器异常退出
+	if !reportProcessed && result.ExitCode != 0 {
+		log.Printf("Solution %s finished with non-zero exit code %d and no report", soln.SolutionId, result.ExitCode)
+		aoi.Patch(context.TODO(), &aoiclient.SolutionInfo{
+			Score:   0,
+			Status:  aoiclient.StatusInternalError,
+			Message: fmt.Sprintf("评测异常退出（退出码 %d），未找到评测报告", result.ExitCode),
+		})
+	}
 
 	// 完成评测
 	if err := aoi.Complete(context.TODO()); err != nil {
@@ -192,7 +264,7 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 	return nil
 }
 
-func (m *Manager) buildExecuteConfig(soln *aoiclient.SolutionPoll, rc *RunningConfig) (*executor.ExecuteConfig, error) {
+func (m *Manager) buildExecuteConfig(soln *aoiclient.SolutionPoll, rc *RunningConfig, outputDir string) (*executor.ExecuteConfig, error) {
 	// 使用 docker_cmd 作为容器执行命令
 	command := rc.DockerCmd
 	if len(command) == 0 {
@@ -247,6 +319,16 @@ func (m *Manager) buildExecuteConfig(soln *aoiclient.SolutionPoll, rc *RunningCo
 			config.Env["JUDGE_VARIABLES"] = string(varsJSON)
 		}
 	}
+
+	// 添加输出目录挂载（用于存放评测报告）
+	// 容器内路径为 /output，容器需要将报告输出到此目录
+	config.Mounts = append(config.Mounts, executor.Mount{
+		Source:   outputDir,
+		Target:   "/output",
+		ReadOnly: false,
+	})
+	// 设置环境变量告知容器输出目录
+	config.Env["OUTPUT_DIR"] = "/output"
 
 	// 添加配置中指定的挂载
 	for _, mount := range rc.Mounts {
