@@ -33,3 +33,5 @@ sec.*
 dev-test/
 tmp/
 examples/
+
+*.env
