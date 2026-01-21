@@ -41,8 +41,11 @@ fi
 
 # 运行 pytest 并生成 JSON 报告
 echo "Running pytest..."
-rm -rf ./tests/test*.py
-cp /lfs-tests/test*.py ./tests
+cp ./tests/adapters.py /tmp/adapters.py
+rm -rf ./tests
+cp -r /lfs-tests/ ./tests
+rm -rf ./tests/adapters.py
+cp /tmp/adapters.py ./tests/adapters.py
 uv sync
 uv add pytest-json-report
 uv run pytest --json-report --json-report-file=report.json || true

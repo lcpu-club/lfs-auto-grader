@@ -9,7 +9,7 @@
     "config": {
       "image": "crmirror.lcpu.dev/lfs/lfs-judge:latest",
       "pre_cmd": [],
-      "docker_cmd": ["/run.sh"],
+      "docker_cmd": ["bash", "/run.sh"],
       "post_cmd": [],
       "timeout": 600,
       "memoryLimit": 4096,
@@ -23,6 +23,11 @@
         {
           "source": "/data/lfs-tests/lfs-1",
           "target": "/lfs-tests",
+          "readOnly": true
+        },
+        {
+          "source": "/data/lfs-scripts/lfs-1.sh",
+          "target": "/run.sh",
           "readOnly": true
         },
         {

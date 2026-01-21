@@ -26,9 +26,5 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV UV_CACHE_DIR=/uv-cache
 
-# 创建评测脚本
-COPY run.sh /run.sh
-RUN chmod +x /run.sh
-
 # 默认命令
 CMD ["/bin/bash"]
