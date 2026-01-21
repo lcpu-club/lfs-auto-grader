@@ -190,7 +190,7 @@ func CalculateScore(report *PytestReport) *LFS1Result {
 		// 计算单个测试的分数
 		var testScore float64
 		if test.Outcome == "passed" || test.Outcome == "xfailed" || test.Outcome == "xpassed" {
-			testScore = 1.0
+			testScore = 100
 		}
 
 		jobs = append(jobs, &aoiclient.SolutionDetailsJob{
