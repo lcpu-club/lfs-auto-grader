@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
 
 # 安装 uv (Python 包管理器)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+RUN PATH=/root/.local/bin:$PATH uv python install 3.13
 ENV PATH="/root/.local/bin:$PATH"
 
 # 创建工作目录
