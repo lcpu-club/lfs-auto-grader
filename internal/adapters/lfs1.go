@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/lcpu-club/lfs-auto-grader/pkg/aoiclient"
 	"github.com/lcpu-club/lfs-auto-grader/pkg/judgerproto"
@@ -14,11 +15,38 @@ type PytestReportSummary struct {
 	Passed    int `json:"passed"`
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
+	XFailed   int `json:"xfailed"`
 	Total     int `json:"total"`
 	Collected int `json:"collected"`
 }
 
-// PytestReport pytest --json-report 产出的 JSON 结构（简化版）
+// PytestCrashInfo pytest 崩溃信息
+type PytestCrashInfo struct {
+	Path    string `json:"path"`
+	Lineno  int    `json:"lineno"`
+	Message string `json:"message"`
+}
+
+// PytestTestPhase pytest 测试阶段（setup/call/teardown）
+type PytestTestPhase struct {
+	Duration float64          `json:"duration"`
+	Outcome  string           `json:"outcome"`
+	Crash    *PytestCrashInfo `json:"crash,omitempty"`
+	Longrepr string           `json:"longrepr,omitempty"`
+}
+
+// PytestTestCase pytest 单个测试用例
+type PytestTestCase struct {
+	NodeID   string           `json:"nodeid"`
+	Lineno   int              `json:"lineno"`
+	Outcome  string           `json:"outcome"`
+	Keywords []string         `json:"keywords"`
+	Setup    *PytestTestPhase `json:"setup,omitempty"`
+	Call     *PytestTestPhase `json:"call,omitempty"`
+	Teardown *PytestTestPhase `json:"teardown,omitempty"`
+}
+
+// PytestReport pytest --json-report 产出的 JSON 结构
 type PytestReport struct {
 	Created     float64             `json:"created"`
 	Duration    float64             `json:"duration"`
@@ -26,6 +54,7 @@ type PytestReport struct {
 	Root        string              `json:"root"`
 	Environment map[string]any      `json:"environment"`
 	Summary     PytestReportSummary `json:"summary"`
+	Tests       []PytestTestCase    `json:"tests"`
 }
 
 // LFS1Result 评测结果
@@ -54,12 +83,72 @@ func ParsePytestReportFromBytes(data []byte) (*PytestReport, error) {
 	return &report, nil
 }
 
+// extractTestName 从 nodeid 提取测试名称
+// 例如: "tests/test_data.py::test_get_batch" -> "test_get_batch"
+func extractTestName(nodeid string) string {
+	// 按 "::" 分割，取最后一个部分
+	parts := strings.Split(nodeid, "::")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return nodeid
+}
+
+// outcomeToStatus 将 pytest outcome 转换为 aoiclient status
+func outcomeToStatus(outcome string) string {
+	switch outcome {
+	case "passed":
+		return aoiclient.StatusAccepted
+	case "failed":
+		return aoiclient.StatusWrongAnswer
+	case "skipped":
+		return "Skipped"
+	case "xfailed":
+		return aoiclient.StatusAccepted // 预期失败，算通过
+	case "xpassed":
+		return aoiclient.StatusAccepted // 预期失败但通过了
+	default:
+		return aoiclient.StatusWrongAnswer
+	}
+}
+
+// generateTestSummary 生成测试用例的摘要信息
+func generateTestSummary(test *PytestTestCase) string {
+	switch test.Outcome {
+	case "passed":
+		return "通过"
+	case "xfailed":
+		return "预期失败"
+	case "xpassed":
+		return "预期失败但通过"
+	case "skipped":
+		return "跳过"
+	case "failed":
+		// 尝试从 call.crash.message 获取错误信息
+		if test.Call != nil && test.Call.Crash != nil && test.Call.Crash.Message != "" {
+			return test.Call.Crash.Message
+		}
+		// 如果没有 crash 信息，尝试从 longrepr 获取（截取前 200 字符）
+		if test.Call != nil && test.Call.Longrepr != "" {
+			longrepr := test.Call.Longrepr
+			if len(longrepr) > 200 {
+				longrepr = longrepr[:200] + "..."
+			}
+			return longrepr
+		}
+		return "测试失败"
+	default:
+		return test.Outcome
+	}
+}
+
 // CalculateScore 根据 pytest 报告计算分数
 // 分数 = (passed / total) * 100
 func CalculateScore(report *PytestReport) *LFS1Result {
 	summary := report.Summary
 	total := summary.Total
-	passed := summary.Passed
+	// xfailed 算作通过
+	passed := summary.Passed + summary.XFailed
 
 	// 计算分数
 	var score float64
@@ -87,36 +176,38 @@ func CalculateScore(report *PytestReport) *LFS1Result {
 	if summary.Skipped > 0 {
 		message += fmt.Sprintf("，跳过 %d 个", summary.Skipped)
 	}
+	if summary.XFailed > 0 {
+		message += fmt.Sprintf("，预期失败 %d 个", summary.XFailed)
+	}
+
+	// 为每个测试用例创建一个 Job
+	jobs := make([]*aoiclient.SolutionDetailsJob, 0, len(report.Tests))
+	for _, test := range report.Tests {
+		testName := extractTestName(test.NodeID)
+		testStatus := outcomeToStatus(test.Outcome)
+		testSummary := generateTestSummary(&test)
+
+		// 计算单个测试的分数
+		var testScore float64
+		if test.Outcome == "passed" || test.Outcome == "xfailed" || test.Outcome == "xpassed" {
+			testScore = 1.0
+		}
+
+		jobs = append(jobs, &aoiclient.SolutionDetailsJob{
+			Name:       testName,
+			Score:      testScore,
+			ScoreScale: 1,
+			Status:     testStatus,
+			Summary:    testSummary,
+			Tests:      []*aoiclient.SolutionDetailsTest{},
+		})
+	}
 
 	// 构建详情
 	details := &aoiclient.SolutionDetails{
 		Version: 1,
 		Summary: message,
-		Jobs: []*aoiclient.SolutionDetailsJob{
-			{
-				Name:       "pytest",
-				Score:      score,
-				ScoreScale: 100,
-				Status:     status,
-				Summary:    fmt.Sprintf("执行耗时 %.2f 秒", report.Duration),
-				Tests: []*aoiclient.SolutionDetailsTest{
-					{
-						Name:       "通过",
-						Score:      float64(passed),
-						ScoreScale: float64(total),
-						Status:     aoiclient.StatusAccepted,
-						Summary:    fmt.Sprintf("%d 个测试通过", passed),
-					},
-					{
-						Name:       "失败",
-						Score:      0,
-						ScoreScale: float64(summary.Failed),
-						Status:     aoiclient.StatusWrongAnswer,
-						Summary:    fmt.Sprintf("%d 个测试失败", summary.Failed),
-					},
-				},
-			},
-		},
+		Jobs:    jobs,
 	}
 
 	return &LFS1Result{

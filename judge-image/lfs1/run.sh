@@ -21,17 +21,20 @@ echo "Detected file type: $FILE_TYPE"
 
 if echo "$FILE_TYPE" | grep -q "Zip archive"; then
     echo "Extracting as zip..."
-    unzip -o /tmp/solution_file -d /home/judge
     
-    # 获取解压后的顶层目录
-    EXTRACTED_DIR=$(unzip -l /tmp/solution_file | awk 'NR==4 {print $4}' | cut -d'/' -f1)
+    if ! unzip -o /tmp/solution_file -d /home/judge; then
+        echo "Failed to extract zip file"
+        exit 1
+    fi
     
-    if [ -d "/home/judge/$EXTRACTED_DIR" ]; then
-        cd "/home/judge/$EXTRACTED_DIR"
+    cd /home/judge
+    
+    ITEMS=(*)
+    if [ ${#ITEMS[@]} -eq 1 ] && [ -d "${ITEMS[0]}" ]; then
+        cd "${ITEMS[0]}"
         echo "Changed to: $(pwd)"
     else
-        # 如果没有顶层目录，就留在 /home/judge
-        echo "No top-level directory found, staying in /home/judge"
+        echo "Staying in: $(pwd)"
     fi
 else
     echo "Unknown file type."
