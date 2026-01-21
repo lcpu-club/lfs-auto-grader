@@ -197,7 +197,7 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 	// 从外部读取并解析评测报告
 	reportProcessed := false
 	adapter := soln.ProblemConfig.Judge.Adapter
-	
+
 	if adapter == "lfs1" {
 		// 获取报告文件名（默认为 report.json）
 		reportFileName := "report.json"
@@ -206,14 +206,14 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 				reportFileName = reportName
 			}
 		}
-		
+
 		reportPath := filepath.Join(outputDir, reportFileName)
 		log.Printf("Looking for report at: %s", reportPath)
-		
+
 		if _, err := os.Stat(reportPath); err == nil {
 			// 报告文件存在，解析并上报
 			log.Printf("Found report file, parsing with adapter: %s", adapter)
-			
+
 			report, err := adapters.ParsePytestReport(reportPath)
 			if err != nil {
 				log.Printf("Failed to parse report: %v", err)
@@ -225,20 +225,20 @@ func (m *Manager) run(soln *aoiclient.SolutionPoll) error {
 			} else {
 				// 使用 adapter 计算分数
 				lfsResult := adapters.CalculateScore(report)
-				
+
 				// 上报结果给 AOI
 				log.Printf("Reporting result: score=%.2f, status=%s", lfsResult.Score, lfsResult.Status)
-				
+
 				aoi.Patch(context.TODO(), &aoiclient.SolutionInfo{
 					Score:   lfsResult.Score,
 					Status:  lfsResult.Status,
 					Message: lfsResult.Message,
 				})
-				
+
 				if lfsResult.Details != nil {
 					aoi.SaveDetails(context.TODO(), lfsResult.Details)
 				}
-				
+
 				reportProcessed = true
 			}
 		} else {
@@ -338,24 +338,6 @@ func (m *Manager) buildExecuteConfig(soln *aoiclient.SolutionPoll, rc *RunningCo
 			ReadOnly: mount.ReadOnly,
 		})
 	}
-
-	// 添加共享数据卷挂载
-	if *m.conf.SharedVolumePath != "" {
-		config.Mounts = append(config.Mounts, executor.Mount{
-			Source:   *m.conf.SharedVolumePath,
-			Target:   "/data",
-			ReadOnly: true,
-		})
-
-		// 添加 uv 缓存目录挂载（提高评测速度）
-		uvCachePath := *m.conf.SharedVolumePath + "/uv-cache"
-		config.Mounts = append(config.Mounts, executor.Mount{
-			Source:   uvCachePath,
-			Target:   "/root/.cache/uv",
-			ReadOnly: false,
-		})
-	}
-
 	return config, nil
 }
 

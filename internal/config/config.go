@@ -1,8 +1,7 @@
 package config
 
 type ManagerConfig struct {
-	Endpoint         *string
-	RunnerID         *string
-	RunnerKey        *string
-	SharedVolumePath *string
+	Endpoint  *string
+	RunnerID  *string
+	RunnerKey *string
 }
